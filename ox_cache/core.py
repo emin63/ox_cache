@@ -61,17 +61,21 @@ Adding 1 to 2 gives 3
 3
 >>> my_func(1, 2)  # Now the function is cached so it is not actually called
 3
->>> my_func.ttl((1, 2)) > 0  # You can access TimedMemoizer methods like ttl
+>>> my_func.ttl(1, 2) > 0  # You can access TimedMemoizer methods like ttl
 True
 >>> my_func.refresh_seconds = 1   # make refresh time very short
 >>> import time; time.sleep(1.5)  # sleep so that cache becomes stale
+>>> my_func.exists(1, y=2)        # can check existsnce and kwargs works
+True
 >>> my_func.expired((1, 2))       # verify that cache is expired
 True
->>> my_func(1, 2)
+>>> my_func(1, 2)                 # will call function again since expired
 Adding 1 to 2 gives 3
 3
 """
 
+import random
+import inspect
 import doctest
 import functools
 import logging
@@ -100,6 +104,9 @@ class OxCacheBase:
         self.lock = threading.Lock()
         self._data = {}
 
+    def __len__(self):
+        return len(self._data)
+
     def make_key(self, base_key, namespace='default', **opts):
         """Make a full key to use in referencing something in the cache.
 
@@ -107,25 +114,34 @@ class OxCacheBase:
                              be basically anything with a stable __repr__
                              method.
 
-        :param namespace='default':        
+        :param namespace='default':   Optional namespace in case you want
+                                      to further distinguish the same keys
+                                      using a different namespace.
 
-        :param **opts:  Keyword options for how to do the refresh. These are
-                        helpful in cases where you might want FIXME.
-
+        :param **opts:  Keyword options which may or may not be part of the
+                        key depending on the particular implementation.
+                        In the simplest use cases, you can just ignore this.
+                        One reason for its existence is to allow sub-classes
+                        to customize things as well as implement namespaces
+                        anod other things in a convenient way. For example,
+                        mention other functions will just call something
+                        like `make_key(base_key, **opts)` and allow the
+                        **opts to carry the namespace.
 
         ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
 
-        :return:
+        :return:   A string representing the composite key combining the
+                   base_key, namespace, and other things in **opts.
 
         ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
 
-        PURPOSE:
+        PURPOSE:   Create a string key for an object.
 
-    """
+        """
+        dummy = self
         full_key = None
         full_key = '/'.join(['namespace:%s' % namespace] + [
-            '%s:%s' % (k, opts[k]) for k in sorted(opts) if k[0] != '*'] + [
-                repr(base_key)])
+            '%s:%s' % (k, opts[k]) for k in sorted(opts)] + [repr(base_key)])
 
         if full_key is None:
             raise ValueError('Cannot make compose key from %s and %s' % (
@@ -218,7 +234,7 @@ class OxCacheBase:
         full_key = self.make_key(key, **opts)
         record = self.get_record(full_key, lock=lock)
         if not record:
-            return False
+            return True
         return self.is_record_expired(record)
 
     def is_record_expired(self, record):
@@ -250,6 +266,9 @@ class OxCacheBase:
 
     def delete(self, key, lock=None, **opts):
         full_key = self.make_key(key, **opts)
+        return self._delete_full_key(full_key, lock=lock)
+
+    def _delete_full_key(self, full_key, lock=None):
         if lock is None:
             lock = self.lock
         with lock:
@@ -257,6 +276,10 @@ class OxCacheBase:
                 del self._data[full_key]
             except KeyError:
                 pass
+
+    def exists(self, key, lock=None, **opts):
+        full_key = self.make_key(key, **opts)
+        return self.get_record(full_key, lock=lock) is not None
 
     def get_record(self, full_key, lock=None):
         if lock is None:
@@ -310,6 +333,26 @@ class TimedRefreshMixin:
                    (now - record.ttl_info).total_seconds())
 
 
+class RandomReplacementMixin:
+
+    def __init__(self, *args, max_size=5, **kwargs):
+        self.max_size = max_size
+        super().__init__(*args, **kwargs)
+
+    def store(self, key, value, ttl_info=None, lock=None, **opts):
+        orig_lock = lock
+        if lock is None:
+            lock = self.lock
+        with lock:
+            fake_lock = threading.Lock()
+            while len(self._data) >= self.max_size:
+                full_key_to_delete = random.choice(list(self._data))
+                logging.debug('%s will remove key %s',
+                              self.__class__.__name__, full_key_to_delete)
+                self._delete_full_key(full_key_to_delete, lock=fake_lock)
+        return super().store(key, value, ttl_info, orig_lock, **opts)
+
+
 class RefreshDictMixin:
 
     def refresh(self, key, lock=None, **opts):
@@ -331,6 +374,7 @@ class MemoizerMixin(OxCacheBase):
 
     def __init__(self, func, *args, **kwargs):
         self.func = func
+        self.argspec = inspect.getargspec(func)
         super().__init__(*args, **kwargs)
         self._fix_wrapper()
 
@@ -338,18 +382,45 @@ class MemoizerMixin(OxCacheBase):
         orig_doc, orig_mod = self.__doc__, self.__module__
         functools.update_wrapper(self, self.func)
         self.__doc__ = '\n'.join([
-            'memoized: ' + self.func.__doc__, '', '---',
+            'memoized: ' + self.func.__doc__, '', '---\n',
             'Memoized by %s:' % self.__class__.__name__, orig_doc])
         self.__module__ = orig_mod
+        for name in ['ttl', 'expired', 'delete', 'exists']:
+            orig_func = getattr(self, name)
+            raw_name = 'raw_%s' % name
+            setattr(self, raw_name, orig_func)
+            decorated = self._make_dec(orig_func, name, raw_name)
+            setattr(self, name, decorated)
+
+    def _make_dec(self, func, name, raw_name):
+        @functools.wraps(func)
+        def decorated(*args, **kwargs):
+            key, opts = self.input_to_key_opts(*args, **kwargs)
+            return func(key, **opts)
+        decorated.__doc__ = '\n'.join([
+            '', 'NOTE: wrapped to translate calling %(name)s(*args, **kw)',
+            'to first get key, opts = self.input_to_key_opts(*args, **kw)',
+            'and then call self.%(raw_name)s(key, **opts).', ''
+            'Call self.%(raw_name)s for raw version described below.',
+            '', '---']) % {'name': name, 'raw_name': raw_name} + (
+                func.__doc__ if func.__doc__ else '(no docs for %s)' % (
+                    raw_name))
+        return decorated
 
     def refresh(self, key, lock=None, **opts):
-        result = self.func(*opts.pop('*args', []), **opts)
-        self.store(key, result, lock=lock)
+        result = self.func(**opts)
+        self.store(key, result, lock=lock, **opts)
+
+    def input_to_key_opts(self, *args, **kwargs):
+        key = self.func.__name__
+        opts = dict(kwargs)
+        for num, value in enumerate(args):
+            name = self.argspec.args[num]
+            opts[name] = value
+        return key, opts
 
     def __call__(self, *args, **kwargs):
-        opts = dict(kwargs)
-        opts['*args'] = args
-        key = args + tuple((k, kwargs[v]) for k in sorted(kwargs))
+        key, opts = self.input_to_key_opts(*args, **kwargs)
         return self.get(key, **opts)
 
 
@@ -363,16 +434,71 @@ class TimedMemoizer(TimedRefreshMixin, MemoizerMixin):
 >>> @TimedMemoizer
 ... def my_func(x, y):
 ...     'Add two inputs'
-...     print('called my_func')
-...     return x + y
+...     z = x + y
+...     print('called my_func(%s, %s) = %s' % (repr(x), repr(y), repr(z)))
+...     return z
 ...
->>> result = my_func(1, 2)
-called my_func
->>> result = my_func(1, 2) # does not print to stdout since memoized
->>> print(my_func.__doc__)
->>> print(my_func.func.__doc__)  # Get the docs for decorated func.
+>>> my_func(1, 2)
+called my_func(1, 2) = 3
+3
+>>> my_func(1, 2)   # does not print to stdout since memoized
+3
+>>> my_func(1, y=2) # handles keyword args correctly
+3
+>>> my_func.ttl(1, y=2) > 0  # can call things like ttl even with kw args
+True
+>>> my_func.expired(1, 2)    # can check if expired
+False
+>>> my_func.exists(1, 2)     # can check if exists (True even if expired)
+True
+>>> my_func.delete(1, 2)     # can delete
+>>> my_func.exists(1, 2)
+False
+>>> my_func(1, 2)
+called my_func(1, 2) = 3
+3
+>>> print(my_func.func.__doc__.strip())  # Get the docs for decorated func.
 Add two inputs
+>>> note = 'Full docstring includes above and mentions memoizer.'
+>>> print(my_func.__doc__.strip()) # doctest: +ELLIPSIS +NORMALIZE_WHITESPACE
+memoized: Add two inputs
+<BLANKLINE>
+---
+Memoized by TimedMemoizer...
 
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+
+class RandomReplacementMemoizer(
+        RandomReplacementMixin, TimedRefreshMixin, MemoizerMixin):
+    """Memoizer class using time based refresh via RandomReplacementMixin
+
+    This is a class that can be used to memoize a function via something
+    like
+
+>>> from ox_cache.core import RandomReplacementMemoizer
+>>> @RandomReplacementMemoizer
+... def my_func(x, y):
+...     'Add two inputs'
+...     z = x + y
+...     print('called my_func(%s, %s) = %s' % (repr(x), repr(y), repr(z)))
+...     return z
+...
+>>> my_func(1, 2)
+called my_func(1, 2) = 3
+3
+>>> import random; random.seed(123) # make test repeatable
+>>> my_func.max_size = 3
+>>> data = [my_func(1, random.randint(1, 50)) for i in range(5)]
+called my_func(1, 4) = 5
+called my_func(1, 18) = 19
+called my_func(1, 6) = 7
+called my_func(1, 50) = 51
+>>> len(my_func)
+3
     """
 
     def __init__(self, *args, **kwargs):

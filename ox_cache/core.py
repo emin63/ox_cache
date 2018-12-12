@@ -284,7 +284,7 @@ class OxCacheBase:
     def get_record(self, full_key, lock=None):
         if lock is None:
             lock = self.lock
-        with lock:        
+        with lock:
             record = self._data.get(full_key, None)
             return record
 
@@ -329,7 +329,7 @@ class TimedRefreshMixin:
 
     def ttl_for_record(self, record):
         now = datetime.datetime.utcnow()
-        return max(0, self.refresh_seconds - 
+        return max(0, self.refresh_seconds -
                    (now - record.ttl_info).total_seconds())
 
 
@@ -468,9 +468,6 @@ Memoized by TimedMemoizer...
 
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
 
 class RandomReplacementMemoizer(
         RandomReplacementMixin, TimedRefreshMixin, MemoizerMixin):
@@ -490,19 +487,16 @@ class RandomReplacementMemoizer(
 >>> my_func(1, 2)
 called my_func(1, 2) = 3
 3
->>> import random; random.seed(123) # make test repeatable
 >>> my_func.max_size = 3
->>> data = [my_func(1, random.randint(1, 50)) for i in range(5)]
-called my_func(1, 4) = 5
-called my_func(1, 18) = 19
-called my_func(1, 6) = 7
-called my_func(1, 50) = 51
+>>> data = [my_func(1, i) for i in range(5)]  # doctest: +ELLIPSIS
+called my_func(1, 0) = ...
+called my_func(1, 1) = ...
+called my_func(1, 3) = ...
+called my_func(1, 4) = ...
 >>> len(my_func)
 3
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
 
 if __name__ == '__main__':
     doctest.testmod()

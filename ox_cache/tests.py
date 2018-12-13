@@ -60,4 +60,3 @@ called my_func(1, 4) = ...
 if __name__ == '__main__':
     doctest.testmod()
     print('Finished tests')
-

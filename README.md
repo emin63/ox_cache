@@ -25,10 +25,30 @@ Install with the usual `pip install ox_cache`.
 
 To get a cache you simply sub-class `OxCacheBase` (possibly along with
 some mix-ins to determine how cache entries expire) and then override
-methods like `make_value` to make the value when a key is not in the
-cache. The following illustrate a simple example where we include
-the `TimedExpiryMixin` so that cache entries expire after a set amount
-of time.
+the `make_value` method to make the value when a key is not in the
+cache. The following illustrates the simplest use case:
+
+```python
+>>> from ox_cache import OxCacheBase
+>>> class BasicCache(OxCacheBase):
+...     def make_value(self, key, **opts):
+...         'Simple function to create value for requested key.'
+...         print('Calling refresh for key="%s"' % key)
+...         return 'x' * key  # create a bunch of x's
+...
+>>> cache = BasicCache()
+>>> cache.get(5)  # Will call make_value to generate 1st value.
+Calling refresh for key="5"
+'xxxxx'
+>>> cache.get(5)  # Will get value from cache without calling make_value
+'xxxxx'
+
+```
+
+You can get more interesting cache features by including mixins.  The
+following illustrate a simple example where we include the
+`TimedExpiryMixin` so that cache entries expire after a set amount of
+time.
 
 ```
 >>> from ox_cache import OxCacheBase, TimedExpiryMixin

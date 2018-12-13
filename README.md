@@ -19,13 +19,16 @@ on a cache miss.
 
 ## Installation
 
-Install with the usual `pip install ox_cache`.
+Install with the usual
+```sh
+$ pip install ox_cache
+```
 
 ## Caching
 
-To get a cache you simply sub-class `OxCacheBase` (possibly along with
-some mix-ins to determine how cache entries expire) and then override
-the `make_value` method to make the value when a key is not in the
+To get a cache you simply sub-class `OxCacheBase` and then override
+desired methods. The only required method you must override is the
+`make_value` method to make the value when a key is not in the
 cache. The following illustrates the simplest use case:
 
 ```python
@@ -114,10 +117,11 @@ called my_func(1, 2) = 3
 ```
 
 Since `OxMemoizer` is just a sub-class of `OxCacheBase` you can use
-one the provided mixins to control expiration or just using something
+one of the provided mixins to control expiration or just use something
 like the `LRUReplacementMemoizer`. As shown below, setting the
 `max_size` property of an instance of `LRUReplacementMemoizer` will
-automatically kick out least recently used cache entries.
+automatically kick out least recently used cache entries when the
+cache gets too large.
 
 ```python
 

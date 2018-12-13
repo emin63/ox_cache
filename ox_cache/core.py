@@ -102,10 +102,13 @@ class OxCacheBase:
 
     def __init__(self):
         self.lock = threading.Lock()
-        self._data = {}
+        self._data = self.make_storage()
 
     def __len__(self):
         return len(self._data)
+
+    def make_storage(self):
+        return {}
 
     def make_key(self, base_key, namespace='default', **opts):
         """Make a full key to use in referencing something in the cache.
@@ -335,7 +338,7 @@ class TimedRefreshMixin:
 
 class RandomReplacementMixin:
 
-    def __init__(self, *args, max_size=5, **kwargs):
+    def __init__(self, *args, max_size=128, **kwargs):
         self.max_size = max_size
         super().__init__(*args, **kwargs)
 
@@ -351,6 +354,50 @@ class RandomReplacementMixin:
                               self.__class__.__name__, full_key_to_delete)
                 self._delete_full_key(full_key_to_delete, lock=fake_lock)
         return super().store(key, value, ttl_info, orig_lock, **opts)
+
+class LRUReplacementMixin:
+
+    def __init__(self, *args, max_size=128, **kwargs):
+        self.max_size = max_size
+        super().__init__(*args, **kwargs)
+        self._tracker = collections.OrderedDict()
+
+    def get(self, key, allow_refresh=True, lock=None, default=None, **opts):
+        if lock is None:
+            lock = self.lock
+        with lock:
+            fake_lock = threading.Lock()
+            full_key = self.make_key(key, **opts)
+            if full_key in self._tracker:            # if key already in self
+                self._tracker.move_to_end(full_key)  # mark as recently used
+            return super().get(key, allow_refresh=allow_refresh,
+                               lock=fake_lock, default=default, **opts)
+
+    def _delete_full_key(self, full_key, lock=None):
+        if lock is None:
+            lock = self.lock
+        with lock:
+            fake_lock = threading.Lock()
+            try:
+                del self._tracker[full_key]
+            except KeyError:
+                pass
+            return super()._delete_full_key(full_key, lock=fake_lock)
+
+    def store(self, key, value, ttl_info=None, lock=None, **opts):
+        if lock is None:
+            lock = self.lock
+        with lock:
+            fake_lock = threading.Lock()
+            while len(self._data) >= self.max_size:
+                full_key_to_delete, dummy = self._tracker.popitem(last=False)
+                logging.debug('%s will remove key %s',
+                              self.__class__.__name__, full_key_to_delete)
+                self._delete_full_key(full_key_to_delete, lock=fake_lock)
+            result = super().store(key, value, ttl_info, lock=fake_lock,
+                                   **opts)
+            self._tracker[self.make_key(key, **opts)] = key
+            return result
 
 
 class RefreshDictMixin:
@@ -473,8 +520,10 @@ class RandomReplacementMemoizer(
         RandomReplacementMixin, TimedRefreshMixin, MemoizerMixin):
     """Memoizer class using time based refresh via RandomReplacementMixin
 
-    This is a class that can be used to memoize a function via something
-    like
+This is a class that can be used to memoize a function keeping
+only `self.max_size` elements with random replacement. This is mainly
+for demonstration or statistical purposes since randomly kicking
+out an item is inefficient.
 
 >>> from ox_cache.core import RandomReplacementMemoizer
 >>> @RandomReplacementMemoizer
@@ -495,6 +544,40 @@ called my_func(1, 3) = ...
 called my_func(1, 4) = ...
 >>> len(my_func)
 3
+    """
+
+
+class LRUReplacementMemoizer(
+        LRUReplacementMixin, TimedRefreshMixin, MemoizerMixin):
+    """Memoizer class using time based refresh via LRUReplacementMixin
+
+This is a class that can be used to memoize a function keeping
+only `self.max_size` elements with least recently used items being replaced.
+
+>>> from ox_cache.core import LRUReplacementMemoizer
+>>> @LRUReplacementMemoizer
+... def my_func(x, y):
+...     'Add two inputs'
+...     z = x + y
+...     print('called my_func(%s, %s) = %s' % (repr(x), repr(y), repr(z)))
+...     return z
+...
+>>> my_func(1, 2)
+called my_func(1, 2) = 3
+3
+>>> my_func.max_size = 3
+>>> data = [my_func(1, i) for i in range(4)]
+called my_func(1, 0) = 1
+called my_func(1, 1) = 2
+called my_func(1, 3) = 4
+>>> len(my_func), my_func.exists(1, 0)  # Verify least recet item kicked out
+(3, False)
+>>> my_func.delete(1, 2)  # Delete an item and add some more
+>>> data = [my_func(2, i) for i in range(2)]
+called my_func(2, 0) = 2
+called my_func(2, 1) = 3
+>>> my_func.exists(1, 1)  # Verify that least recent item kicked out
+False
     """
 
 

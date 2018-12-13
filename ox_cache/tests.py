@@ -99,8 +99,8 @@ Calling refresh for key="test"
 Calling refresh for key="test"
 opts were {'__not_keys': ('tag',), 'tag': 'foo'}
 'key="test" is fun!'
->>> cache.make_key('test', __not_keys=('tag',), tag='foo')
-
+>>> cache.make_key('test', __not_keys=('tag',), tag='foo') #doctest: +ELLIPSIS
+OxCacheFullKey(...)
     """
 
 if __name__ == '__main__':

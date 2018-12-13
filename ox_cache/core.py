@@ -1,77 +1,4 @@
 """Core implementation of ox_cache
-
-The ox_cache.core module provides tools to build your own simple caching
-system. See docs on the following for details:
-
-  - OxCacheBase:        Base class all caches inherit from.
-  - TimedRefreshMixin:  Mix-in for time-based refresh.
-  - RefreshDictMixin:   Mix-in to refresh full cache from a dict.
-
-The following illustrates how you can use these classes to create a
-simple cache which refreshes itself either when a set amount of time
-has passed or when a cache miss occurs.
-
->>> import logging, datetime, time
->>> from ox_cache.core import OxCacheBase, TimedRefreshMixin, RefreshDictMixin
->>> class MyCache(TimedRefreshMixin, RefreshDictMixin, OxCacheBase):
-...     'Simple cache with time-based refresh via a function that gives dict'
-...     def make_dict(self, key):
-...         "Function to make dict to use to refresh cache."
-...         logging.info('Refresh trigged for key=%s', key)
-...         second = datetime.datetime.utcnow().second
-...         return {k: str(k)+self.info for k in ([key] + list(range(10)))}
-...
->>> cache = MyCache()
->>> cache.info = '5'
->>> cache.get(2) # will auto-refresh using make_dict
-'25'
->>> cache.ttl(2) > 0
-True
->>> cache.info = '6'
->>> cache.get(2) # cache has not been marked as stale so no refresh
-'25'
->>> cache.refresh_seconds = 1  # make refresh time very short
->>> time.sleep(1.5)  # sleep so that cache becomes stale
->>> cache.ttl(2)
-0
->>> cache.get(2)     # check cache to see that we auto-refresh
-'26'
->>> cache.refresh_seconds = 1000  # slow down auto refresh for other examples
->>> cache.store(800, 5)
->>> cache.get(800)
-5
->>> cache.store('800', 'a string')
->>> cache.get('800')
-'a string'
->>> cache.delete(800)
->>> cache.get(800, allow_refresh=False) is None
-True
-
-
->>> from ox_cache.core import TimedMemoizer
->>> @TimedMemoizer
-... def my_func(x, y):
-...     'Add two inputs together'
-...     z = x + y
-...     print('Adding %s to %s gives %s' % (x, y, z))
-...     return z
-...
->>> my_func(1, 2)  # Calling the first time will call the underlying function
-Adding 1 to 2 gives 3
-3
->>> my_func(1, 2)  # Now the function is cached so it is not actually called
-3
->>> my_func.ttl(1, 2) > 0  # You can access TimedMemoizer methods like ttl
-True
->>> my_func.refresh_seconds = 1   # make refresh time very short
->>> import time; time.sleep(1.5)  # sleep so that cache becomes stale
->>> my_func.exists(1, y=2)        # can check existsnce and kwargs works
-True
->>> my_func.expired((1, 2))       # verify that cache is expired
-True
->>> my_func(1, 2)                 # will call function again since expired
-Adding 1 to 2 gives 3
-3
 """
 
 import random
@@ -82,6 +9,7 @@ import logging
 import datetime
 import threading
 import collections
+
 
 OxCacheItem = collections.namedtuple('OxCacheItem', [
     'payload', 'ttl_info'])
@@ -96,18 +24,85 @@ fields:
 '''
 
 
-class OxCacheBase:
-    """Base class for caches.
+class FakeLock:
+    """Fake lock.
+
+    The OxCacheBase is designed to be thread-safe and lock most operations
+    using an internal lock. Sometimes, however, you may have one locking
+    operation call another. For example, you may have `refresh` call `store`
+    in which case you want `store` not to try to aquire the lock which
+    `refresh` has already aquired. This FakeLock class accomplishes that.
     """
 
-    def __init__(self):
-        self.lock = threading.Lock()
+    def __init__(self, lock_name='unnamed'):
+        self.lock_name = lock_name
+
+    def __enter__(self):
+        logging.debug('Faking lock entry for lock named "%s"', self.lock_name)
+        return self
+
+    def __exit__(self, *exc):
+        logging.debug('Faking lock exit for lock named "%s", exc=%s',
+                      self.lock_name, exc)
+        return False
+
+
+class OxCacheBase:
+    """Base class for caches.
+
+This serve as the base class providing most of the caching functionality
+such as locking, checking expiration, and so on. Some of the functions
+you may wish to override include:
+
+  - make_value:      Make a value for a requested key not in the cache.
+  - ttl_for_record:  Determine time to live for a given cache record.
+  - create_ttl:      Create initial time-to-live for record when created.
+
+In order to create a cache, the bare the minimum you need to do is to
+override the `make_value` method as illustrated below.
+
+>>> from ox_cache import OxCacheBase
+>>> class NeverExipiringCache(OxCacheBase):
+...     'Simple cache which never expires'
+...     def make_value(self, key, **opts):
+...         'Simple function to create value for requested key.'
+...         print('Calling refresh for key="%s"' % key)
+...         return 'key="%s" is fun!' % key
+...
+>>> cache = NeverExipiringCache()
+>>> cache.get('test')  # Will refresh the cache for this key and return value
+Calling refresh for key="test"
+'key="test" is fun!'
+>>> cache.get('test')  # Will return cached value since already in cache
+'key="test" is fun!'
+>>> cache.get('foo')   # Will refresh the cache for this key and return value
+Calling refresh for key="foo"
+'key="foo" is fun!'
+>>> cache.delete('test') # Delete item from cache
+>>> cache.get('test')  # Will refresh the cache since we deleted this key
+Calling refresh for key="test"
+'key="test" is fun!'
+
+You can determine things like how keys are expired or removed either by
+overriding methods such as ttl_for_record and create_ttl or by using some
+of the mixins provided. See `help(ox_cache)` for `print(ox_cache.__doc__)`
+for a more detailed discussion.
+    """
+
+    def __init__(self, make_lock=threading.Lock):
+        self.lock = make_lock()
         self._data = self.make_storage()
 
     def __len__(self):
         return len(self._data)
 
     def make_storage(self):
+        """Make dict-like storage to store data in.
+
+        Sub-classes can override to return some other dict-like
+        structure (e.g., to store to disk or something).
+        """
+        dummy = self
         return {}
 
     def make_key(self, base_key, namespace='default', **opts):
@@ -151,10 +146,33 @@ class OxCacheBase:
                 base_key, opts))
         return full_key
 
-    def refresh(self, key, **opts):
+    def make_value(self, key, **opts):
+        """Make the data value corresponding to the given key/opts.
+
+        :param key:     Hashable key for object to make value for.
+
+        :param **opts:  Keyword options for how to make the value.
+                        See the make_key method for details on key/**opts.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        PURPOSE:  Make the value corresponding to the given key/opts.
+                  This will be called when the user calls self.get for a
+                  key/opts which is not in the cache.
+
+                  Sub-classes must implement.
+
+                  This is one of the core methods which determines how
+                  the cache works.
+        """
+        raise NotImplementedError
+
+    def refresh(self, key, lock=None, **opts):
         """Refresh the cache for key (or maybe for everything).
 
         :param key:     Hashable key for object to refresh.
+
+        :param lock=None:   Optional lock to use. If None, use self.lock.
 
         :param **opts:  Keyword options for how to do the refresh.
                         See the make_key method for details on key/**opts.
@@ -162,12 +180,54 @@ class OxCacheBase:
         ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
 
         PURPOSE:  Refresh self._data either for this key or perhaps
-                  for everything.  Sub-classes must implement.
-
-                  This is one of the core methods which determines how
-                  the cache works.
+                  for everything. This calls `self.make_value` which is
+                  generally what sub-classes will want to overide. The
+                  `refresh` method calls `make_value` and also handles
+                  things like locking for thread-saftey, calling create_ttl,
+                  calling, self.store, and so on.
         """
-        raise NotImplementedError
+        logging.debug('Refresh key/opts=%s/%s in %s', key, opts,
+                      self.__class__.__name__)
+        if lock is None:
+            lock = self.lock
+        with lock:
+            my_value = self.make_value(key, **opts)
+            ttl_info = self.create_ttl(key, **opts)
+            self.store(key, my_value, ttl_info, lock=FakeLock(), **opts)
+
+    def ttl(self, key, lock=None, **opts):
+        """Return time-to-live for given key/**opts.
+
+        :param key:     Hashable key for object to refresh.
+
+        :param lock=None:   Optional lock to use. If None, use self.lock.
+
+        :param **opts:  Keyword options for how to do the refresh.
+                        See the make_key method for details on key/**opts.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        :return:  A float value representing the estimated time-to-live for
+                  the given key.
+
+                  By default the time-to-live is an estimate in
+                  seconds. It is an estimate since some cache expiry methods
+                  may be more complicated and not have an exact ttl. Also,
+                  some cache expiration methods may be based on size and not
+                  time in which case the ttl may be a measure of how close
+                  to being kicked out the item is. In any case, a ttl
+                  of 0 indicates the item is expired.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        PURPOSE:  Provide a way to get the time-to-live for an item. This
+                  is the main function a user will call. Sub-classes should
+                  generally override the lower level `self.ttl_for_record`
+                  instead of this.
+        """
+        full_key = self.make_key(key, **opts)
+        record = self.get_record(full_key, lock=lock)
+        return self.ttl_for_record(record)
 
     def ttl_for_record(self, record):
         """Determine the time to live for a given cache record.
@@ -186,15 +246,33 @@ class OxCacheBase:
         PURPOSE:   This is one of the key methods which determines how
                    the cache system works. Sub-classes must override
                    this to determine how the cache works.
+
+                   By default, this method returns 1000000 indicating it
+                   is a long time before it expires. Sub-classes should
+                   either override or include a mixin to control expiration.
+
+                   For example, see the TimedExpiryMixin class for an example
+                   where we implement this as basically
+
+           return max(0, self.expiry_seconds - (
+               datetime.datetime.utcnow() - record.ttl_info).total_seconds())
+
+                   to compute expiration as whether self.expiry_seconds have
+                   passed since the record was created.
+
+
+        SEE ALSO:  `create_ttl`.
+
         """
-        raise NotImplementedError
+        dummy = self, record
+        return 1000000
 
-    def get_ttl_info(self, key, **opts):
-        """Return time to live related information for given key and opts
+    def create_ttl(self, key, **opts):
+        """Create initial time-to-live information for given key and opts.
 
-        :param key:     Hashable key for object to refresh.
+        :param key:     Hashable key for object to get ttl info for.
 
-        :param **opts:  Keyword options for how to do the refresh.
+        :param **opts:  Keyword options for how to do the key lookup.
                         See the make_key method for details on key/**opts.
 
         ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
@@ -204,8 +282,7 @@ class OxCacheBase:
 
         ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
 
-        PURPOSE:  Get time to live related information or None if there
-                  is no record for the given key/**opts. By default,
+        PURPOSE:  Create time to live related information By default,
                   this method simply returns datetime.datetime.utcnow()
                   to represent when the item was added to the cache.
                   Sub-classes can use the returned value as they see fit
@@ -217,11 +294,11 @@ class OxCacheBase:
     def expired(self, key, lock=None, **opts):
         """Determine if the given key/**opts is expired.
 
-        :param key:     Hashable key for object to refresh.
+        :param key:     Hashable key for object to check expiration for.
 
         :param lock=None:   Optional lock to use. If None, use self.lock.
 
-        :param **opts:  Keyword options for how to do the refresh.
+        :param **opts:  Keyword options for how to do the key lookup.
                         See the make_key method for details on key/**opts.
 
         ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
@@ -259,32 +336,105 @@ class OxCacheBase:
         return self.ttl_for_record(record) == 0
 
     def store(self, key, value, ttl_info=None, lock=None, **opts):
+        """Store a value for the given key.
+
+        :param key:     Hashable key for object to store.
+
+        :param value:   Value to store.
+
+        :param ttl_info=None:    Time-to-live information. The form of
+                                 this depends on how ttl_for_record is
+                                 implemented by a sub-class or mix-in.
+
+        :param lock=None:   Optional lock to use. If None, use self.lock.
+
+        :param **opts:  Keyword options for how to determine full key.
+                        See the make_key method for details on key/**opts.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        PURPOSE:  Store a value for the given key.
+
+        """
         if lock is None:
             lock = self.lock
         with lock:
             if ttl_info is None:
-                ttl_info = self.get_ttl_info(key, **opts)
+                ttl_info = self.create_ttl(key, **opts)
             full_key = self.make_key(key, **opts)
             self._data[full_key] = OxCacheItem(value, ttl_info)
 
     def delete(self, key, lock=None, **opts):
+        """Store a value for the given key.
+
+        :param key:     Hashable key for object to delete.
+
+        :param lock=None:   Optional lock to use. If None, use self.lock.
+
+        :param **opts:  Keyword options for how to determine full key.
+                        See the make_key method for details on key/**opts.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        PURPOSE:  Delete the given key. Raise KeyError if no such key
+                  exists.
+
+        """
         full_key = self.make_key(key, **opts)
         return self._delete_full_key(full_key, lock=lock)
 
     def _delete_full_key(self, full_key, lock=None):
+        """Helper method to delete an item based on the full key.
+
+        :param full_key:     Full key for the item to delete.
+
+        :param lock=None:   Optional lock to use. If None, use self.lock.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        PURPOSE:   This is a helper method to be called by the delete
+                   method or by sub-classes to actually delete data
+                   from the data store. If sub-classes want to track
+                   keys (e.g., to implement LRU caching), this also
+                   serves as a good method to override to do something
+                   before or after deletes.
+        """
         if lock is None:
             lock = self.lock
         with lock:
-            try:
-                del self._data[full_key]
-            except KeyError:
-                pass
+            del self._data[full_key]
 
     def exists(self, key, lock=None, **opts):
+        """Check if the given key is in our store.
+
+        :param key:     Hashable key for object to check.
+
+        :param lock=None:   Optional lock to use. If None, use self.lock.
+
+        :param **opts:  Keyword options for how to determine full key.
+                        See the make_key method for details on key/**opts.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        PURPOSE:  Return True/False if the key exists or not.
+
+        """
         full_key = self.make_key(key, **opts)
         return self.get_record(full_key, lock=lock) is not None
 
     def get_record(self, full_key, lock=None):
+        """Helper method to get internal OxCacheItem record for key.
+
+        :param full_key:     Full key for the item to lookup.
+
+        :param lock=None:   Optional lock to use. If None, use self.lock.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        PURPOSE:   This is a helper method to be called to get the
+                   OxCacheItem for a record (e.g., to determine time-to-live).
+                   Users should call `get` not this.
+        """
         if lock is None:
             lock = self.lock
         with lock:
@@ -292,47 +442,211 @@ class OxCacheBase:
             return record
 
     def get(self, key, allow_refresh=True, lock=None, default=None, **opts):
+        """Get the value for the given key if it exists (or possibly refresh).
+
+        :param key:     key for object to check.
+
+        :param allow_refresh=True:   Whether to allow refreshing or creating
+                                     the value for the key if it is either
+                                     expired or non-existent.
+
+        :param lock=None:   Optional lock to use. If None, use self.lock.
+
+        :param default=None:   Default value to return if allow_refresh is
+                               False and there is no value to return. Usually
+                               this is None, but you can set it to something
+                               else if you want to distinguish between no
+                               value for the key and a key which can have
+                               a None value.
+
+        :param **opts:  Keyword options for how to determine full key.
+                        See the make_key method for details on key/**opts.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        :return:  Value for the given key or default if not found.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        PURPOSE:  Get the value for a key.
+
+        """
         if lock is None:
             lock = self.lock
         with lock:
             base_key = key
             key = self.make_key(base_key, **opts)
             record = self._data.get(key, None)
-            fake_lock = threading.Lock()  # already locked so fake lower lock
             if record is None:     # Do not know anything about requested key
                 if allow_refresh:  # If allowed, do a refresh
-                    self.refresh(base_key, lock=fake_lock, **opts)
+                    self.refresh(base_key, lock=FakeLock(), **opts)
                     return self.get(base_key, allow_refresh=False,
-                                    lock=fake_lock, **opts)
-                else:
-                    return default
+                                    lock=FakeLock(), **opts)
+                return default
             # record was found but may be expired so must check that
             if self.is_record_expired(record):
                 if allow_refresh:
-                    self.refresh(base_key, lock=fake_lock, **opts)
+                    self.refresh(base_key, lock=FakeLock(), **opts)
                     return self.get(base_key, allow_refresh=False,
-                                    lock=fake_lock, **opts)
-                else:
-                    return default
+                                    lock=FakeLock(), **opts)
+                return default
 
             # Found a non-expired record so return payload
             return record.payload
 
 
-class TimedRefreshMixin:
+class RefreshDictMixin:
+    """Mixin for a cache which refreshes keys from a single `make_dict` method.
 
-    def __init__(self, *args, refresh_seconds=3600, **kwargs):
-        self.refresh_seconds = refresh_seconds
+By inheriting from OxCacheBase along with RefreshDictMixin, you can define
+a `make_dict` function which will be called on a cache miss to populate the
+entire cache. This is useful for making a `batch cache` such as if you pull
+data from an FTP site or external web site or file on disk. In those cases,
+it is usually more efficient to populate the cache for a lot of keys at
+once rather than just a single key each time.
+
+The following shows example usage.
+
+>>> from ox_cache import RefreshDictMixin, OxCacheBase
+>>> class DictCache(RefreshDictMixin, OxCacheBase):
+...     'Example cache which populates using a `make_dict` method.'
+...     def make_dict(self, key, **opts):
+...         "Function to make dict to use to refresh cache."
+...         print('Refresh trigged for key=%s' % key)
+...         return {k: str(k)+self.info for k in ([key] + list(range(10)))}
+...
+>>> cache = DictCache()
+>>> cache.info = '5'
+>>> cache.get(2)  # This call will trigger a refresh
+Refresh trigged for key=2
+'25'
+>>> cache.get(4)  # The refresh already setup this key so no refresh occurs
+'45'
+>>> cache.get(50) # This call will trigger a refresh since not in original dict
+Refresh trigged for key=50
+'505'
+"""
+
+    def make_dict(self, key, **opts):
+        """Make a dictionary of keys and values to store in the cache.
+
+        :param key:     The base key which triggered the refresh request.
+                        At an aboslute minimum the returned result *MUST*
+                        contain this key.
+
+        :param **opts:  Keyword options for how to determine full key.
+                        See the make_key method for details on key/**opts.
+                        Note these `opts` will be used for **ALL** the keys
+                        returned by `self.make_dict`.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        :return:   A dictionary of keys and values.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        PURPOSE:   Provide a function which takes a key and returns a
+                   dictionary of keys and values to store in the cache.
+                   This returned dictionary **MUST** contain the `key`
+                   argument which `make_dict` was called with and may
+                   optionally contain more keys.
+        """
+        raise NotImplementedError
+
+    def refresh(self, key, lock=None, **opts):
+        """Refresh the cache by calling a make_dict method.
+
+        :param key:     key for object which triggered the refresh request.
+
+        :param lock=None:   Optional lock to use. If None, use self.lock.
+
+        :param **opts:  Keyword options for how to determine full key.
+                        See the make_key method for details on key/**opts.
+                        Note these `opts` will be used for **ALL** the keys
+                        returned by `self.make_dict`.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        PURPOSE:  This will call `self.make_dict(key, **opts)` to get the
+                  refresh data while providing other conveniences such as
+                  locking for thread safety, calling self.create_ttl to setup
+                  time-to-live properly, calling self.store, etc.
+
+        """
+        logging.debug('Calling %s in %s', 'refresh', self.__class__.__name__)
+        if lock is None:
+            lock = self.lock
+        with lock:
+            my_dict = self.make_dict(key, **opts)
+            assert key in my_dict, (
+                'Base key "%s" not in result of make_dict!' % str(key))
+            for base_key, value in my_dict.items():
+                ttl_info = self.create_ttl(base_key, **opts)
+                self.store(base_key, value, ttl_info,
+                           lock=FakeLock(), **opts)
+
+
+class TimedExpiryMixin:
+    """Mixin which expires cache elements after a fixed time in seconds.
+
+By creating your own class which inherits from both OxCacheBase
+and TimedExpiryMixin, you can get timed expiration as illusrated below.
+You can either provide the expiry_seconds keyword argument on __init__
+or simply change self.expiry_seconds as desired.
+
+>>> from ox_cache import OxCacheBase, TimedExpiryMixin
+>>> class TimedCache(TimedExpiryMixin, OxCacheBase):
+...     'Simple cache which expires items after after self.expiry_seconds.'
+...     def make_value(self, key, **opts):
+...         'Simple function to create value for requested key.'
+...         print('Calling refresh for key="%s"' % key)
+...         return 'key="%s" is fun!' % key
+...
+>>> cache = TimedCache(expiry_seconds=100) # expires after 100 seconds
+>>> cache.get('test')  # Will call make_value to generate value.
+Calling refresh for key="test"
+'key="test" is fun!'
+>>> cache.ttl('test') > 60  # Check time to live is pretty long
+True
+>>> cache.get('test')  # If called immediately, will use cached item
+'key="test" is fun!'
+>>> cache.expiry_seconds = 1     # Change expiration time to be much faster
+>>> import time; time.sleep(1.1) # Wait a few seconds for cache item to expire
+>>> cache.get('test')  # Will generate a new value since time limit expired
+Calling refresh for key="test"
+'key="test" is fun!'
+    """
+
+    def __init__(self, *args, expiry_seconds=3600, **kwargs):
+        """Initializer for TimedExpiryMixin.
+
+        :param expiry_seconds=3600:  You can set this keyword argument to
+                                     be how log you want keys to live.
+
+        Otherwise *args, **kwargs are passed along to super().__init__.
+        """
+        self.expiry_seconds = expiry_seconds
         super().__init__(*args, **kwargs)
 
-    def ttl(self, key, **opts):
-        full_key = self.make_key(key, **opts)
-        record = self.get_record(full_key)
-        return self.ttl_for_record(record)
-
     def ttl_for_record(self, record):
+        """Override to compute expiration as whether self.expiry_seconds passed
+
+        :param record:     Instance of OxCacheItem to analyze.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        :return:  Time-to-live in seconds.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        PURPOSE:  Compute the time-to-live as how many seconds remain before
+                  the record is past `self.expiry_seconds` old. This assumes
+                  that `record.ttl_info` was generated by the default
+                  `OxCacheBase.create_ttl` method.
+
+        """
         now = datetime.datetime.utcnow()
-        return max(0, self.refresh_seconds -
+        return max(0, self.expiry_seconds -
                    (now - record.ttl_info).total_seconds())
 
 
@@ -347,13 +661,13 @@ class RandomReplacementMixin:
         if lock is None:
             lock = self.lock
         with lock:
-            fake_lock = threading.Lock()
             while len(self._data) >= self.max_size:
                 full_key_to_delete = random.choice(list(self._data))
                 logging.debug('%s will remove key %s',
                               self.__class__.__name__, full_key_to_delete)
-                self._delete_full_key(full_key_to_delete, lock=fake_lock)
+                self._delete_full_key(full_key_to_delete, lock=FakeLock())
         return super().store(key, value, ttl_info, orig_lock, **opts)
+
 
 class LRUReplacementMixin:
 
@@ -366,53 +680,37 @@ class LRUReplacementMixin:
         if lock is None:
             lock = self.lock
         with lock:
-            fake_lock = threading.Lock()
             full_key = self.make_key(key, **opts)
             if full_key in self._tracker:            # if key already in self
                 self._tracker.move_to_end(full_key)  # mark as recently used
             return super().get(key, allow_refresh=allow_refresh,
-                               lock=fake_lock, default=default, **opts)
+                               lock=FakeLock(), default=default, **opts)
 
     def _delete_full_key(self, full_key, lock=None):
         if lock is None:
             lock = self.lock
         with lock:
-            fake_lock = threading.Lock()
             try:
                 del self._tracker[full_key]
             except KeyError:
                 pass
-            return super()._delete_full_key(full_key, lock=fake_lock)
+            return super()._delete_full_key(full_key, lock=FakeLock())
 
     def store(self, key, value, ttl_info=None, lock=None, **opts):
         if lock is None:
             lock = self.lock
         with lock:
-            fake_lock = threading.Lock()
             while len(self._data) >= self.max_size:
                 full_key_to_delete, dummy = self._tracker.popitem(last=False)
                 logging.debug('%s will remove key %s',
                               self.__class__.__name__, full_key_to_delete)
-                self._delete_full_key(full_key_to_delete, lock=fake_lock)
-            result = super().store(key, value, ttl_info, lock=fake_lock,
+                self._delete_full_key(full_key_to_delete, lock=FakeLock())
+            result = super().store(key, value, ttl_info, lock=FakeLock(),
                                    **opts)
             self._tracker[self.make_key(key, **opts)] = key
             return result
 
 
-class RefreshDictMixin:
-
-    def refresh(self, key, lock=None, **opts):
-        logging.debug('Calling %s in %s', 'refresh', self.__class__.__name__)
-        if lock is None:
-            lock = self.lock
-        with lock:
-            my_dict = self.make_dict(key)
-            ttl_info = self.get_ttl_info(key, **opts)
-            fake_lock = threading.Lock()  # already locked so fake lower lock
-            for base_key, value in my_dict.items():
-                self.store(base_key, value, ttl_info,
-                           lock=fake_lock, **opts)
 
 
 class MemoizerMixin(OxCacheBase):
@@ -471,8 +769,8 @@ class MemoizerMixin(OxCacheBase):
         return self.get(key, **opts)
 
 
-class TimedMemoizer(TimedRefreshMixin, MemoizerMixin):
-    """Memoizer class using time based refresh via TimedRefreshMixin.
+class TimedMemoizer(TimedExpiryMixin, MemoizerMixin):
+    """Memoizer class using time based refresh via TimedExpiryMixin.
 
     This is a class that can be used to memoize a function via something
     like
@@ -517,7 +815,7 @@ Memoized by TimedMemoizer...
 
 
 class RandomReplacementMemoizer(
-        RandomReplacementMixin, TimedRefreshMixin, MemoizerMixin):
+        RandomReplacementMixin, TimedExpiryMixin, MemoizerMixin):
     """Memoizer class using time based refresh via RandomReplacementMixin
 
 This is a class that can be used to memoize a function keeping
@@ -548,7 +846,7 @@ called my_func(1, 4) = ...
 
 
 class LRUReplacementMemoizer(
-        LRUReplacementMixin, TimedRefreshMixin, MemoizerMixin):
+        LRUReplacementMixin, TimedExpiryMixin, MemoizerMixin):
     """Memoizer class using time based refresh via LRUReplacementMixin
 
 This is a class that can be used to memoize a function keeping

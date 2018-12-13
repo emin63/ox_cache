@@ -10,6 +10,7 @@ import collections
 
 from ox_cache.locks import FakeLock
 
+
 class OxCacheFullKey(collections.namedtuple('OxCacheFullKey', [
         'namespace', 'base_key', 'opts'])):
     '''Repersentation for the full key in a cache.

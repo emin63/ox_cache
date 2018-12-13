@@ -82,7 +82,7 @@ from ox_cache.core import (
 from ox_cache.mixins import (
     RefreshDictMixin, TimedExpiryMixin, LRUReplacementMixin)
 from ox_cache.memoizers import (
-    OxMemoizer, TimedMemoizer)
+    OxMemoizer, TimedMemoizer, LRUReplacementMemoizer)
 
 if __name__ == '__main__':
     logging.info(
@@ -90,5 +90,5 @@ if __name__ == '__main__':
             str(m) for m in [
                 OxCacheBase, OxCacheFullKey, OxCacheItem,
                 RefreshDictMixin, TimedExpiryMixin, LRUReplacementMixin,
-                OxMemoizer, TimedMemoizer]
+                OxMemoizer, TimedMemoizer, LRUReplacementMemoizer]
             ] + ['Nothing gets done when running this module as main.']))

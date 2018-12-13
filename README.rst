@@ -1,7 +1,7 @@
 Introduction
 ============
 
-The ``ox_cache`` package is a collection of tools for fast, efficient,
+The ``ox_cache`` package is a collection of tools for fast, thread-safe,
 and flexible caching or memoizing of results. In particular,
 ``ox_cache`` is designed to make it easy to implement the quirks of your
 particular caching needs.
@@ -21,19 +21,43 @@ Quick Start
 Installation
 ------------
 
-Install with the usual ``pip install ox_cache``.
+Install with the usual
+
+.. code:: sh
+
+    $ pip install ox_cache
 
 Caching
 -------
 
-To get a cache you simply sub-class ``OxCacheBase`` (possibly along with
-some mix-ins to determine how cache entries expire) and then override
-methods like ``make_value`` to make the value when a key is not in the
-cache. The following illustrate a simple example where we include the
+To get a cache you simply sub-class ``OxCacheBase`` and then override
+desired methods. The only required method you must override is the
+``make_value`` method to make the value when a key is not in the cache.
+The following illustrates the simplest use case:
+
+.. code:: python
+
+    >>> from ox_cache import OxCacheBase
+    >>> class BasicCache(OxCacheBase):
+    ...     def make_value(self, key, **opts):
+    ...         'Simple function to create value for requested key.'
+    ...         print('Calling refresh for key="%s"' % key)
+    ...         return 'x' * key  # create a bunch of x's
+    ...
+    >>> cache = BasicCache()
+    >>> cache.get(5)  # Will call make_value to generate 1st value.
+    Calling refresh for key="5"
+    'xxxxx'
+    >>> cache.get(5)  # Will get value from cache without calling make_value
+    'xxxxx'
+
+You can get more interesting cache features by including mixins. The
+following illustrate a simple example where we include the
 ``TimedExpiryMixin`` so that cache entries expire after a set amount of
 time.
 
-::
+.. code:: python
+
 
     >>> from ox_cache import OxCacheBase, TimedExpiryMixin
     >>> class TimedCache(TimedExpiryMixin, OxCacheBase):
@@ -76,7 +100,8 @@ Memoization
 To memoize (cache) function calls you can use something like the
 ``OxMemoizer`` as a function decorator as shown in the example below:
 
-::
+.. code:: python
+
 
     >>> from ox_cache import OxMemoizer
     >>> @OxMemoizer
@@ -93,12 +118,14 @@ To memoize (cache) function calls you can use something like the
     3
 
 Since ``OxMemoizer`` is just a sub-class of ``OxCacheBase`` you can use
-one the provided mixins to control expiration or just using something
+one of the provided mixins to control expiration or just use something
 like the ``LRUReplacementMemoizer``. As shown below, setting the
 ``max_size`` property of an instance of ``LRUReplacementMemoizer`` will
-automatically kick out least recently used cache entries.
+automatically kick out least recently used cache entries when the cache
+gets too large.
 
-::
+.. code:: python
+
 
     >>> from ox_cache import LRUReplacementMemoizer
     >>> @LRUReplacementMemoizer
@@ -126,7 +153,8 @@ simply subclass ``OxMemoizer`` and include mixins like
 Note that since our memoizers are sub-classes of ``OxCacheBase``, you
 can use any of the methods from ``OxCacheBase`` as shown below:
 
-::
+.. code:: python
+
 
     >>> my_func.exists(1, 3)
     True
@@ -150,7 +178,8 @@ example, the following illustrates how you can use the
 ``BatchCache`` which updates the whole cache any time there is a cache
 miss:
 
-::
+.. code:: python
+
 
     >>> from ox_cache import OxCacheBase, TimedExpiryMixin, RefreshDictMixin
     >>> class BatchCache(TimedExpiryMixin, RefreshDictMixin, OxCacheBase):

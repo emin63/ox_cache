@@ -50,7 +50,8 @@ following illustrate a simple example where we include the
 `TimedExpiryMixin` so that cache entries expire after a set amount of
 time.
 
-```
+```python
+
 >>> from ox_cache import OxCacheBase, TimedExpiryMixin
 >>> class TimedCache(TimedExpiryMixin, OxCacheBase):
 ...     'Cache which expires items after after self.expiry_seconds.'
@@ -94,7 +95,8 @@ source code or in the following documentation sections.
 To memoize (cache) function calls you can use something like
 the `OxMemoizer` as a function decorator as shown in the example below:
 
-```
+```python
+
 >>> from ox_cache import OxMemoizer
 >>> @OxMemoizer
 ... def my_func(x, y):
@@ -117,7 +119,8 @@ like the `LRUReplacementMemoizer`. As shown below, setting the
 `max_size` property of an instance of `LRUReplacementMemoizer` will
 automatically kick out least recently used cache entries.
 
-```
+```python
+
 >>> from ox_cache import LRUReplacementMemoizer
 >>> @LRUReplacementMemoizer
 ... def my_func(x, y):
@@ -146,7 +149,8 @@ simply subclass `OxMemoizer` and include mixins like
 Note that since our memoizers are sub-classes of `OxCacheBase`, you
 can use any of the methods from `OxCacheBase` as shown below:
 
-```
+```python
+
 >>> my_func.exists(1, 3)
 True
 >>> my_func.delete(1, 3)
@@ -169,7 +173,8 @@ example, the following illustrates how you can use the
 `TimedExpiryMixin` and the `RefreshDictMixin` to create a `BatchCache`
 which updates the whole cache any time there is a cache miss:
 
-```
+```python
+
 >>> from ox_cache import OxCacheBase, TimedExpiryMixin, RefreshDictMixin
 >>> class BatchCache(TimedExpiryMixin, RefreshDictMixin, OxCacheBase):
 ...     'Simple cache with time-based refresh via a function that gives dict'

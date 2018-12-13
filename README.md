@@ -1,7 +1,7 @@
 
 # Introduction
 
-The `ox_cache` package is a collection of tools for fast, efficient, and
+The `ox_cache` package is a collection of tools for fast, thread-safe, and
 flexible caching or memoizing of results. In particular, `ox_cache` is
 designed to make it easy to implement the quirks of your particular
 caching needs.

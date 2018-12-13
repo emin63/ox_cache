@@ -25,7 +25,7 @@ setup(
     version=VERSION,
     description='Tools for caching and memoization in python.',
     long_description=get_readme(),
-    url='http://github.com/aocks/ox_cache',
+    url='http://github.com/emin63/ox_cache',
     author='Emin Martinian',
     author_email='emin.martinian@gmail.com',
     license='MIT',

@@ -15,6 +15,23 @@ The basic structure is that you create a sub-class of ``OxCacheBase``,
 include appropriate mixins, and then define a way to get a new value on
 a cache miss.
 
+Features
+--------
+
+Some of the interesting features of ``ox_cache`` include:
+
+1. Flexible: You can mix and match mixins and overrides to easily get
+   desired caching behaviour.
+2. Memoization: Built-in decorators for function memoization.
+3. Dict-like: Dictionary methods such as ``__setitem__``,
+   ``__getitem__``, ``__delitem__``, ``__contains__``, ``__iter__``, and
+   ``items`` are provided.
+4. Thread-safe: All of the basic operations use threading.Lock().
+5. Thread-smart: Hooks and overridable methods are structured so that
+   you can ignore threads in your customization but stay thread safe.
+6. Docs: Python docstrings are provided for every class and method.
+7. Unit tests: Source code comes with unit tests.
+
 Quick Start
 ===========
 
@@ -214,3 +231,7 @@ miss:
     >>> cache.get(800, allow_refresh=False) is None
     True
 
+Additional Information
+======================
+
+You can find the project page at https://github.com/emin63/ox\_cache

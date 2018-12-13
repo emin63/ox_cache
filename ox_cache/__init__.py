@@ -12,7 +12,7 @@ simple cache which refreshes itself either when a set amount of time
 has passed or when a cache miss occurs.
 
 >>> import logging, datetime, time
->>> from ox_cache.core import OxCacheBase, TimedExpiryMixin, RefreshDictMixin
+>>> from ox_cache import OxCacheBase, TimedExpiryMixin, RefreshDictMixin
 >>> class MyCache(TimedExpiryMixin, RefreshDictMixin, OxCacheBase):
 ...     'Simple cache with time-based refresh via a function that gives dict'
 ...     def make_dict(self, key):
@@ -48,7 +48,7 @@ True
 True
 
 
->>> from ox_cache.core import TimedMemoizer
+>>> from ox_cache import TimedMemoizer
 >>> @TimedMemoizer
 ... def my_func(x, y):
 ...     'Add two inputs together'

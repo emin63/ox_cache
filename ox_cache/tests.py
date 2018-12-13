@@ -1,27 +1,34 @@
 """Provide various tests of core code.
 """
 
+import logging
+import doctest
+import random
+
+from ox_cache.mixins import TimedExpiryMixin
+from ox_cache.memoizers import OxMemoizer
+from ox_cache.locks import FakeLock
+
+
 class RandomReplacementMixin:
+    """Example mixin to do random replacement.
+    """
 
     def __init__(self, *args, max_size=128, **kwargs):
         self.max_size = max_size
         super().__init__(*args, **kwargs)
 
-    def store(self, key, value, ttl_info=None, lock=None, **opts):
-        orig_lock = lock
-        if lock is None:
-            lock = self.lock
-        with lock:
-            while len(self._data) >= self.max_size:
-                full_key_to_delete = random.choice(list(self._data))
-                logging.debug('%s will remove key %s',
-                              self.__class__.__name__, full_key_to_delete)
-                self._delete_full_key(full_key_to_delete, lock=FakeLock())
-        return super().store(key, value, ttl_info, orig_lock, **opts)
+    def _pre_store(self, key, value, ttl_info=None, **opts):
+        dummy = key, value, ttl_info, opts
+        while len(self._data) >= self.max_size:
+            full_key_to_delete = random.choice(list(self._data))
+            logging.debug('%s will remove key %s',
+                          self.__class__.__name__, full_key_to_delete)
+            self._delete_full_key(full_key_to_delete, lock=FakeLock())
 
 
 class RandomReplacementMemoizer(
-        RandomReplacementMixin, TimedExpiryMixin, MemoizerMixin):
+        RandomReplacementMixin, TimedExpiryMixin, OxMemoizer):
     """Memoizer class using time based refresh via RandomReplacementMixin
 
 This is a class that can be used to memoize a function keeping
@@ -29,7 +36,7 @@ only `self.max_size` elements with random replacement. This is mainly
 for demonstration or statistical purposes since randomly kicking
 out an item is inefficient.
 
->>> from ox_cache.core import RandomReplacementMemoizer
+>>> from ox_cache.tests import RandomReplacementMemoizer
 >>> @RandomReplacementMemoizer
 ... def my_func(x, y):
 ...     'Add two inputs'
@@ -49,3 +56,8 @@ called my_func(1, 4) = ...
 >>> len(my_func)
 3
     """
+
+if __name__ == '__main__':
+    doctest.testmod()
+    print('Finished tests')
+

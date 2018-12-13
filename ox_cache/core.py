@@ -492,11 +492,11 @@ for a more detailed discussion.
         if lock is None:
             lock = self.lock
         with lock:
-            for full_key, ox_rec in self.items():
-                ttl = self.ttl_for_record(ox_rec.ttl_info)
+            for full_key, ox_rec in list(self.items()):
+                ttl = self.ttl_for_record(ox_rec)
                 if ttl <= 0:
                     self._delete_full_key(full_key, FakeLock())
-                    removed.append(full_key, ox_rec)
+                    removed.append((full_key, ox_rec))
             return removed
 
     def store(self, key, value, ttl_info=None, lock=None, **opts):

@@ -57,6 +57,52 @@ called my_func(1, 4) = ...
 3
     """
 
+
+def _regr_test_cache():
+    """Simple tests for basic cache.
+
+>>> from ox_cache import OxCacheBase, TimedExpiryMixin
+>>> class TimedCache(TimedExpiryMixin, OxCacheBase):
+...     'Simple cache which expires items after after self.expiry_seconds.'
+...     def make_value(self, key, **opts):
+...         'Simple function to create value for requested key.'
+...         print('Calling refresh for key="%s"' % key)
+...         if opts:
+...              print('opts were %s' % str(opts))
+...         return 'key="%s" is fun!' % key
+...
+>>> cache = TimedCache(expiry_seconds=100) # expires after 100 seconds
+>>> cache.get('test')  # Will call make_value to generate value.
+Calling refresh for key="test"
+'key="test" is fun!'
+>>> cache.ttl('test') > 60  # Check time to live is pretty long
+True
+>>> cache.get('test')  # If called immediately, will use cached item
+'key="test" is fun!'
+>>> cache.expiry_seconds = 1     # Change expiration time to be much faster
+>>> import time; time.sleep(1.1) # Wait a few seconds for cache item to expire
+>>> cache.get('test')  # Will generate a new value since time limit expired
+Calling refresh for key="test"
+'key="test" is fun!'
+>>> cache['test']
+'key="test" is fun!'
+>>> cache['test'] = 'blah'  # Manually store new value
+>>> cache['test']
+'blah'
+>>> time.sleep(1.2)
+>>> removed = cache.clean()
+>>> len(removed)
+1
+>>> type(removed[0][0].odict())
+<class 'dict'>
+>>> cache.get('test', __not_keys=('tag',), tag='foo')
+Calling refresh for key="test"
+opts were {'__not_keys': ('tag',), 'tag': 'foo'}
+'key="test" is fun!'
+>>> cache.make_key('test', __not_keys=('tag',), tag='foo')
+
+    """
+
 if __name__ == '__main__':
     doctest.testmod()
     print('Finished tests')

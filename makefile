@@ -10,7 +10,8 @@ pypi: README.rst
 	 python3 setup.py sdist upload -r pypi
 
 test:
-	py.test -vvv --doctest-modules --doctest-glob='*.md' .
+	py.test --cov=. --cov-report term-missing \
+          -vvv --doctest-modules --doctest-glob='*.md' .
 
 README.rst: README.md
 	pandoc --from=markdown --to=rst --output=README.rst README.md

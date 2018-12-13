@@ -77,11 +77,13 @@ Adding 1 to 2 gives 3
 
 import logging
 
-from ox_cache.core import (OxCacheBase, RefreshDictMixin, TimedExpiryMixin)
+from ox_cache.core import (OxCacheBase, RefreshDictMixin, TimedExpiryMixin,
+                           LRUReplacementMixin)
 
 if __name__ == '__main__':
     logging.info(
         'Imported various ox_cache classes:\n%s', '\n'.join([
             str(m) for m in [
-                OxCacheBase, RefreshDictMixin, TimedExpiryMixin]
+                OxCacheBase, RefreshDictMixin, TimedExpiryMixin,
+                LRUReplacementMixin]
             ] + ['Nothing gets done when running this module as main.']))

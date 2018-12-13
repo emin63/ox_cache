@@ -10,6 +10,42 @@ import threading
 import collections
 
 
+class OxCacheFullKey(collections.namedtuple('OxCacheFullKey', [
+        'namespace', 'base_key', 'opts'])):
+    '''Repersentation for the full key in a cache.
+
+The OxCacheFullKey class is a namedtuple to represent a cache key with
+the following components:
+
+  - namespace:  The namespace the key lives in.
+  - base_key:   The `key` value provided in something like `store` or `get`.
+  - opts:       A list of pairs representing the **opts provided to something
+                like `store` or `get`.
+
+We use a compose key like this since sometimes it useful to distinguish
+the base key from the opts and have both readily available.
+
+While the value of having a namespace in the cache as separate from the key
+may be straightforward, you might wonder why we need the opts. Roughly
+speaking, these make our implemetnation much more flexible for sub-classes.
+For example, they allow a relatively simple implementation of function
+memoization as with the OxMemoizer or TimedMemoizer classes.
+    '''
+
+    def odict(self):
+        """Return a dict representing the **opts for the key.
+
+        You can do something like cache.get(self.base_key, **self.odict()) to
+        explicitly call OxCacheBase methods with the base key and opts
+        where the key came from if you like.
+
+        Note that generally you can just pass an instance of OxCacheFullKey
+        to most OxCacheBase methods and they will recognize how to parse
+        the pieces of the key.
+        """
+        return dict(self.opts, namespace=self.namespace)
+
+
 OxCacheItem = collections.namedtuple('OxCacheItem', [
     'payload', 'ttl_info'])
 OxCacheItem.__doc__ = '''Cache entry item.
@@ -66,21 +102,39 @@ override the `make_value` method as illustrated below.
 ...     def make_value(self, key, **opts):
 ...         'Simple function to create value for requested key.'
 ...         print('Calling refresh for key="%s"' % key)
-...         return 'key="%s" is fun!' % key
+...         return 'key="%s" made' % key
 ...
 >>> cache = NeverExipiringCache()
 >>> cache.get('test')  # Will refresh the cache for this key and return value
 Calling refresh for key="test"
-'key="test" is fun!'
+'key="test" made'
 >>> cache.get('test')  # Will return cached value since already in cache
-'key="test" is fun!'
+'key="test" made'
 >>> cache.get('foo')   # Will refresh the cache for this key and return value
 Calling refresh for key="foo"
-'key="foo" is fun!'
+'key="foo" made'
+
+We can also use many of the familiar built-in features of dicts likes
+len, __iter__, in, del, items, and so on. One minor issue is that the cache
+keys are OxCacheFullKey instances which are combinations of the key and
+the **opts provided. You can still index the cache using OxCacheFullKey
+instances but you can also display just the base key if you like as shown
+below.
+
+>>> for fkey in sorted(cache): # Can iterate over cache items
+...     print('%s: %s' % (fkey.base_key, cache[fkey])) # note [] instead of get
+...
+foo: key="foo" made
+test: key="test" made
 >>> cache.delete('test') # Delete item from cache
+>>> len(cache), len(list(cache.items()))  # len and items also work
+(1, 1)
 >>> cache.get('test')  # Will refresh the cache since we deleted this key
 Calling refresh for key="test"
-'key="test" is fun!'
+'key="test" made'
+>>> del cache["test"]
+>>> 'test' in cache, 'foo' in cache  # You can use the in operator for exists
+(False, True)
 
 You can determine things like how keys are expired or removed either by
 overriding methods such as ttl_for_record and create_ttl or by using some
@@ -92,8 +146,33 @@ for a more detailed discussion.
         self.lock = make_lock()
         self._data = self.make_storage()
 
+    def __contains__(self, key):
+        return self.exists(key)
+
     def __len__(self):
         return len(self._data)
+
+    def __iter__(self):
+        return self._data.__iter__()
+
+    def __delitem__(self, key):
+        return self.delete(key)
+
+    def __getitem__(self, key):
+        return self.get(key)
+
+    def __setitem__(self, key, value):
+        return self.store(key, value)
+
+    def items(self):
+        """Return a list of pairs representing keys and records in the cache.
+
+        The result will be a sequence of (KEY, VALUE) pairs where the
+        KEY elements are instances of OxCacheFullKey and the VALUE
+        elements are instances of OxCacheItem. See docs for those for
+        details or see main class help/__doc__ for an example usage.
+        """
+        return self._data.items()
 
     def make_storage(self):
         """Make dict-like storage to store data in.
@@ -104,16 +183,27 @@ for a more detailed discussion.
         dummy = self
         return {}
 
-    def make_key(self, base_key, namespace='default', **opts):
+    def make_key(self, base_key, namespace='default', __not_keys=(),
+                 **opts):
         """Make a full key to use in referencing something in the cache.
 
-        :param base_key:     Hashable key for object to refresh. This can
-                             be basically anything with a stable __repr__
-                             method.
+        :param base_key:     Hashable key for object to refresh. If this is
+                             an instance of OxCacheFullKey and opts is empty,
+                             then base_key will be used as the full key.
+                             Otherwise, we will create an instance of
+                             OxCacheFullKey by combing the base_key with
+                             the namespace and the **opts.
 
         :param namespace='default':   Optional namespace in case you want
                                       to further distinguish the same keys
                                       using a different namespace.
+
+        :param __not_keys=():  Optional sequence of strings which are in
+                               opts.keys() but should be ignored by make_key.
+                               This can be useful if your make_value method
+                               needs some arguments from **opts that you want
+                               to use in creating the value but you do not
+                               want that part of the key.
 
         :param **opts:  Keyword options which may or may not be part of the
                         key depending on the particular implementation.
@@ -136,13 +226,14 @@ for a more detailed discussion.
 
         """
         dummy = self
-        full_key = None
-        full_key = '/'.join(['namespace:%s' % namespace] + [
-            '%s:%s' % (k, opts[k]) for k in sorted(opts)] + [repr(base_key)])
+        if isinstance(base_key, OxCacheFullKey) and not opts:
+            full_key = base_key
+        else:
+            if __not_keys:
+                opts = {k: v for k, v in opts.items() if k not in __not_keys}
+            full_key = OxCacheFullKey(namespace, base_key, tuple(
+                (k, opts[k]) for k in sorted(opts)))
 
-        if full_key is None:
-            raise ValueError('Cannot make compose key from %s and %s' % (
-                base_key, opts))
         return full_key
 
     def make_value(self, key, **opts):
@@ -165,6 +256,74 @@ for a more detailed discussion.
                   the cache works.
         """
         raise NotImplementedError
+
+    def _pre_get(self, key, allow_refresh, **opts):
+        """Hook called right after `self.get` enters its lock.
+
+        :param key, allow_refresh, **opts:  As received by `self.get` method.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        PURPOSE:  This is a hook that the `get` method shall execute
+                  right after it locks things.
+                  Having a hook into `get` makes it easier to implement
+                  things like an LRU caching mechanism. See the
+                  LRUReplacementMixin for example usage.
+        """
+        dummy = self, key, allow_refresh, opts
+
+    def _pre_store(self, key, value, ttl_info, **opts):
+        """Hook called right after `store` enters lock and computes ttl_info.
+
+        :param key, value:  As provided to store method.
+
+        :param ttl_info:    The `ttl_info` computed by `store`.
+
+        :param **opts:      As provided to store method.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        PURPOSE:  This is a hook that the `store` method shall execute
+                  right after it locks things and computes `ttl_info`.
+                  Having a hook into `store` makes it easier to implement
+                  things like an LRU caching mechanism. See the
+                  LRUReplacementMixin for example usage.
+        """
+        dummy = self, key, value, ttl_info, opts
+
+    def _post_store(self, key, value, ttl_info, **opts):
+        """Hook called right before `store` exits lock.
+
+        :param key, value:  As provided to store method.
+
+        :param ttl_info:    The `ttl_info` computed by `store`.
+
+        :param **opts:      As provided to store method.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        PURPOSE:  This is a hook that the `store` method shall execute
+                  right before it exits its lock.
+                  Having a hook into `store` makes it easier to implement
+                  things like an LRU caching mechanism. See the
+                  LRUReplacementMixin for example usage.
+        """
+        dummy = self, key, value, ttl_info, opts
+
+    def _pre_delete_full_key(self, full_key):
+        """Hook called right after `_pre_delete_full_key` enters lock.
+
+        :param full_key:  As provided to _pre_delete_full_key method.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        PURPOSE:  This is a hook that the `_pre_delete_full_key` method shall
+                  execute right after it locks things.
+                  Having a hook into `_pre_delete_full_key` makes it easier
+                  to implement things like an LRU caching mechanism. See the
+                  LRUReplacementMixin for example usage.
+        """
+        dummy = self, full_key
 
     def refresh(self, key, lock=None, **opts):
         """Refresh the cache for key (or maybe for everything).
@@ -334,6 +493,34 @@ for a more detailed discussion.
         """
         return self.ttl_for_record(record) == 0
 
+    def clean(self, lock=None):
+        """Go through everything in the cache and remove expired elements.
+
+        :param lock=None:   Optional lock to use. If None, use self.lock.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        :return:  Returns a list of pairs similar to `self.items` for
+                  items we removed from the cache.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        PURPOSE:  Go through everything in the cache which is expired and
+                  remove it. You can either use this to prune the cache
+                  as necessary or use mixins like the LRUReplacementMixin
+                  to keep the cache size managable.
+        """
+        removed = []
+        if lock is None:
+            lock = self.lock
+        with lock:
+            for full_key, ox_rec in self.items():
+                ttl = self.ttl_for_record(ox_rec.ttl_info)
+                if ttl <= 0:
+                    self._delete_full_key(full_key, FakeLock())
+                    removed.append(full_key, ox_rec)
+            return removed
+
     def store(self, key, value, ttl_info=None, lock=None, **opts):
         """Store a value for the given key.
 
@@ -352,7 +539,10 @@ for a more detailed discussion.
 
         ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
 
-        PURPOSE:  Store a value for the given key.
+        PURPOSE:  Store a value for the given key. You can also store
+                  a value with something like `self[full_key] = value`
+                  but then cannot provide things like `ttl_info`, `lock`,
+                  or `**opts`.
 
         """
         if lock is None:
@@ -360,8 +550,10 @@ for a more detailed discussion.
         with lock:
             if ttl_info is None:
                 ttl_info = self.create_ttl(key, **opts)
+            self._pre_store(key, value, ttl_info, **opts)
             full_key = self.make_key(key, **opts)
             self._data[full_key] = OxCacheItem(value, ttl_info)
+            self._post_store(key, value, ttl_info, **opts)
 
     def delete(self, key, lock=None, **opts):
         """Store a value for the given key.
@@ -376,7 +568,8 @@ for a more detailed discussion.
         ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
 
         PURPOSE:  Delete the given key. Raise KeyError if no such key
-                  exists.
+                  exists. You can also do `del self[full_key]` but in that
+                  form you cannot provide `lock` or `**opts`.
 
         """
         full_key = self.make_key(key, **opts)
@@ -401,6 +594,7 @@ for a more detailed discussion.
         if lock is None:
             lock = self.lock
         with lock:
+            self._pre_delete_full_key(full_key)
             del self._data[full_key]
 
     def exists(self, key, lock=None, **opts):
@@ -415,7 +609,10 @@ for a more detailed discussion.
 
         ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
 
-        PURPOSE:  Return True/False if the key exists or not.
+        PURPOSE:  Return True/False if the key exists or not. Note that
+                  a key may exist but still be expired. You can also use
+                  something like `full_key in self` but then cannot provide
+                  `lock` or `**opts` in that form.
 
         """
         full_key = self.make_key(key, **opts)
@@ -467,12 +664,15 @@ for a more detailed discussion.
 
         ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
 
-        PURPOSE:  Get the value for a key.
+        PURPOSE:  Get the value for a key. You can also use something like
+                  `self[full_key]` but cannot provide other paramters in
+                  that form.
 
         """
         if lock is None:
             lock = self.lock
         with lock:
+            self._pre_get(key, allow_refresh=allow_refresh, **opts)
             base_key = key
             key = self.make_key(base_key, **opts)
             record = self._data.get(key, None)
@@ -650,56 +850,79 @@ Calling refresh for key="test"
 
 
 class LRUReplacementMixin:
+    """Mixin to provide least-recently-used cache semantics.
+
+By including the LRUReplacementMixin you can set your cache to have a
+maximum size and evict least recently used elements when they size limit
+is reached.
+
+The following illustrates an example.
+
+>>> from ox_cache import OxCacheBase, LRUReplacementMixin
+>>> class LRUCache(LRUReplacementMixin, OxCacheBase):
+...     'Simple cache which evicts least recently used items to save space.'
+...     def make_value(self, key, **opts):
+...         'Simple function to create value for requested key.'
+...         print('Calling refresh for key="%s"' % key)
+...         return 'key="%s" is fun!' % key
+...
+>>> cache = LRUCache(max_size=3)
+>>> cache.get('test')  # Will call make_value to generate value.
+Calling refresh for key="test"
+'key="test" is fun!'
+>>> cache.get('test')  # Will get element from cache.
+'key="test" is fun!'
+>>> data = [cache.get(x) for x in ['a', 'b', 'test', 'c']]
+Calling refresh for key="a"
+Calling refresh for key="b"
+Calling refresh for key="c"
+>>> cache.get('test')  # Will get element from cache since it was recent.
+'key="test" is fun!'
+>>> cache.get('a')  # Will have to refresh cache since 'a' was least recent.
+Calling refresh for key="a"
+'key="a" is fun!'
+    """
 
     def __init__(self, *args, max_size=128, **kwargs):
         self.max_size = max_size
         super().__init__(*args, **kwargs)
         self._tracker = collections.OrderedDict()
 
-    def get(self, key, allow_refresh=True, lock=None, default=None, **opts):
-        if lock is None:
-            lock = self.lock
-        with lock:
-            full_key = self.make_key(key, **opts)
-            if full_key in self._tracker:            # if key already in self
-                self._tracker.move_to_end(full_key)  # mark as recently used
-            return super().get(key, allow_refresh=allow_refresh,
-                               lock=FakeLock(), default=default, **opts)
+    def _pre_get(self, key, allow_refresh, **opts):
+        "Track get request to implement LRU semantics."
+        dummy = allow_refresh
+        full_key = self.make_key(key, **opts)
+        if full_key in self._tracker:
+            self._tracker.move_to_end(full_key)  # pylint: disable=no-member
 
-    def _delete_full_key(self, full_key, lock=None):
-        if lock is None:
-            lock = self.lock
-        with lock:
-            try:
-                del self._tracker[full_key]
-            except KeyError:
-                pass
-            return super()._delete_full_key(full_key, lock=FakeLock())
+    def _pre_delete_full_key(self, full_key):
+        "Track delete request to implement LRU semantics."
+        try:
+            del self._tracker[full_key]
+        except KeyError:
+            pass
 
-    def store(self, key, value, ttl_info=None, lock=None, **opts):
-        if lock is None:
-            lock = self.lock
-        with lock:
-            while len(self._data) >= self.max_size:
-                full_key_to_delete, dummy = self._tracker.popitem(last=False)
-                logging.debug('%s will remove key %s',
-                              self.__class__.__name__, full_key_to_delete)
-                self._delete_full_key(full_key_to_delete, lock=FakeLock())
-            result = super().store(key, value, ttl_info, lock=FakeLock(),
-                                   **opts)
-            self._tracker[self.make_key(key, **opts)] = key
-            return result
+    def _pre_store(self, key, value, ttl_info, **opts):
+        dummy = value, ttl_info
+        full_key_to_delete = self.make_key(key, **opts)
+        while len(self._data) >= self.max_size:
+            full_key_to_delete, dummy = self._tracker.popitem(last=False)
+            logging.debug('%s will remove key %s',
+                          self.__class__.__name__, full_key_to_delete)
+            self._delete_full_key(full_key_to_delete, lock=FakeLock())
+
+    def _post_store(self, key, value, ttl_info, **opts):
+        dummy = value, ttl_info
+        self._tracker[self.make_key(key, **opts)] = key
 
 
-
-
-class MemoizerMixin(OxCacheBase):
+class OxMemoizer(OxCacheBase):
     """FIXME
     """# FIXME
 
     def __init__(self, func, *args, **kwargs):
         self.func = func
-        self.argspec = inspect.getargspec(func)
+        self.argspec = inspect.getfullargspec(func)
         super().__init__(*args, **kwargs)
         self._fix_wrapper()
 
@@ -749,7 +972,7 @@ class MemoizerMixin(OxCacheBase):
         return self.get(key, **opts)
 
 
-class TimedMemoizer(TimedExpiryMixin, MemoizerMixin):
+class TimedMemoizer(TimedExpiryMixin, OxMemoizer):
     """Memoizer class using time based refresh via TimedExpiryMixin.
 
     This is a class that can be used to memoize a function via something
@@ -795,7 +1018,7 @@ Memoized by TimedMemoizer...
 
 
 class LRUReplacementMemoizer(
-        LRUReplacementMixin, TimedExpiryMixin, MemoizerMixin):
+        LRUReplacementMixin, TimedExpiryMixin, OxMemoizer):
     """Memoizer class using time based refresh via LRUReplacementMixin
 
 This is a class that can be used to memoize a function keeping

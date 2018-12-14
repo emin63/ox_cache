@@ -30,7 +30,8 @@ Some of the interesting features of ``ox_cache`` include:
 5. Thread-smart: Hooks and overridable methods are structured so that
    you can ignore threads in your customization but stay thread safe.
 6. Docs: Python docstrings are provided for every class and method.
-7. Unit tests: Source code comes with unit tests.
+7. Unit tests: Source code comes with unit tests with very high code
+   coverage.
 
 Quick Start
 ===========

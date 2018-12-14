@@ -5,10 +5,9 @@
 import doctest
 import logging
 import datetime
-import threading
 import collections
 
-from ox_cache.locks import FakeLock
+from ox_cache.locks import FakeLock, TimeoutLock
 
 
 class OxCacheFullKey(collections.namedtuple('OxCacheFullKey', [
@@ -120,8 +119,14 @@ of the mixins provided. See `help(ox_cache)` for `print(ox_cache.__doc__)`
 for a more detailed discussion.
     """
 
-    def __init__(self, make_lock=threading.Lock):
-        self.lock = make_lock()
+    def __init__(self, lock=None):
+        """Initializer.
+
+        :param lock=None:  Context manager for locking. If this is None,
+                           we use TimeoutLock(). If you want a different
+                           timeout provide TimeoutLock(your_timeout).
+        """
+        self.lock = lock if lock is not None else TimeoutLock()
         self._data = self.make_storage()
 
     def __contains__(self, key):

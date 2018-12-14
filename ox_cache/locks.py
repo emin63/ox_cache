@@ -1,7 +1,53 @@
 """Module to collect alterantive locks which may be useful.
 """
 
+import doctest
 import logging
+import threading
+
+
+class TimeoutLock:
+    """Custom version of threading.Lock with auto-timeout.
+
+The TimeoutLock is a custom version of threading.Lock which will autoamtically
+timeout and raise an Exception if it cannot acquire a lock. This is helpful
+since if you are waiting on a lock for a long time, probably it is a deadlock
+and you want to be informed.
+
+The following illustrates example usage:
+
+>>> from ox_cache import locks
+>>> lock = locks.TimeoutLock(timeout=2)
+>>> try:
+...     with lock:
+...         print('this should get printed fine')
+...         with lock:
+...             print('this should cause a timeout')
+... except Exception as problem:
+...     print('got problem: %s' % str(problem))
+...
+this should get printed fine
+got problem: Unable to get lock after timeout of 2
+>>> with lock:
+...     print('Can reuse lock after it is released')
+...
+Can reuse lock after it is released
+
+    """
+
+    def __init__(self, timeout=300, lock=threading.Lock):
+        self.timeout = timeout
+        self.lock = lock()
+
+    def __enter__(self):
+        got_lock = self.lock.acquire(timeout=self.timeout)
+        if got_lock:
+            return self.lock
+        raise Exception('Unable to get lock after timeout of %s' % (
+            self.timeout))
+
+    def __exit__(self, *exc):
+        self.lock.release()
 
 
 class FakeLock:
@@ -25,3 +71,8 @@ class FakeLock:
         logging.debug('Faking lock exit for lock named "%s", exc=%s',
                       self.lock_name, exc)
         return False
+
+
+if __name__ == '__main__':
+    doctest.testmod()
+    print('Finished Tests')

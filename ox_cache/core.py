@@ -305,8 +305,23 @@ for a more detailed discussion.
                   Having a hook into `_pre_delete_full_key` makes it easier
                   to implement things like an LRU caching mechanism. See the
                   LRUReplacementMixin for example usage.
+
+                  If a sub-class implements this hook, it may also want to
+                  implement the _post_reset hook as well.
         """
         dummy = self, full_key
+
+    def _post_reset(self):
+        """Hook called after self.reset() finishes just before lock released.
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        PURPOSE:  This is a hook that the `reset` method shall call right
+                  after it finishes but before it releases its lock.
+                  Having a hook into `_post_reset` makes it easier
+                  to implement things like an LRU caching mechanism. See the
+                  LRUReplacementMixin for example usage.
+        """
+        dummy = self
 
     def refresh(self, key, lock=None, **opts):
         """Refresh the cache for key (or maybe for everything).
@@ -475,6 +490,23 @@ for a more detailed discussion.
 
         """
         return self.ttl_for_record(record) == 0
+
+    def reset(self, lock=None):
+        """Reset and clear the cache.
+
+        :param lock=None:   Optional lock to use. If None, use self.lock.
+
+        ~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-
+
+        PURPOSE:  Clear everything in the cache by resetting self._data and
+                  then call self._post_reset() before relesaing lock.
+                  Mix-ins may want to implement _post_reset.
+        """
+        if lock is None:
+            lock = self.lock
+        with lock:
+            self._data = self.make_storage()
+            self._post_reset()
 
     def clean(self, lock=None):
         """Go through everything in the cache and remove expired elements.

@@ -1,9 +1,11 @@
 """Module to collect alterantive locks which may be useful.
 """
 
+from logging import getLogger  # Use LOGGER and no other logging things in here
 import doctest
-import logging
 import threading
+
+LOGGER = getLogger(__name__)
 
 
 class TimeoutLock:
@@ -40,6 +42,7 @@ Can reuse lock after it is released
         self.lock = lock()
 
     def __enter__(self):
+        LOGGER.debug('Entering TimeoutLock for ox_cache')
         got_lock = self.lock.acquire(timeout=self.timeout)
         if got_lock:
             return self.lock
@@ -48,6 +51,7 @@ Can reuse lock after it is released
 
     def __exit__(self, *exc):
         self.lock.release()
+        LOGGER.debug('Released TimeoutLock for ox_cache')
 
 
 class FakeLock:
@@ -64,12 +68,12 @@ class FakeLock:
         self.lock_name = lock_name
 
     def __enter__(self):
-        logging.debug('Faking lock entry for lock named "%s"', self.lock_name)
+        LOGGER.debug('Faking lock entry for lock named "%s"', self.lock_name)
         return self
 
     def __exit__(self, *exc):
-        logging.debug('Faking lock exit for lock named "%s", exc=%s',
-                      self.lock_name, exc)
+        LOGGER.debug('Faking lock exit for lock named "%s", exc=%s',
+                     self.lock_name, exc)
         return False
 
 

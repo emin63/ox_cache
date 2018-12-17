@@ -195,6 +195,9 @@ Calling refresh for key="c"
 >>> cache.get('a')  # Will have to refresh cache since 'a' was least recent.
 Calling refresh for key="a"
 'key="a" is fun!'
+>>> cache.reset()   # We can reset the cache completely if
+>>> len(cache)      # we want to just start over.
+0
     """
 
     def __init__(self, *args, max_size=128, **kwargs):
@@ -215,6 +218,10 @@ Calling refresh for key="a"
             del self._tracker[full_key]
         except KeyError:
             pass
+
+    def _post_reset(self):
+        "Reset the tracker after the cache had self.reset() called."
+        self._tracker = collections.OrderedDict()
 
     def _pre_store(self, key, value, ttl_info, **opts):
         dummy = value, ttl_info

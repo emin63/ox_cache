@@ -84,7 +84,7 @@ from ox_cache.mixins import (
 from ox_cache.memoizers import (
     OxMemoizer, TimedMemoizer, LRUReplacementMemoizer)
 
-VERSION = '1.2.1'
+VERSION = '1.3.1'
 
 if __name__ == '__main__':
     logging.info(

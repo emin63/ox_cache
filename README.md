@@ -9,7 +9,8 @@ caching needs.
 For example, if you want to repopulate the entire cache when you get a
 single cache miss, you can include the `RefreshDictMixin`. Or if you
 want to include least-recently-used semantics, you can include the
-`LRUReplacementMixin`.
+`LRUReplacementMixin`. Or if you want a timed expiration, you can use
+the `TimedExpiryMixin`.
 
 The basic structure is that you create a sub-class of `OxCacheBase`,
 include appropriate mixins, and then define a way to get a new value
@@ -20,7 +21,7 @@ on a cache miss.
 Some of the interesting features of `ox_cache` include:
 
   1. Flexible: You can mix and match mixins and overrides to easily get
-               desired caching behaviour.
+               desired caching behavior.
   2. Memoization: Built-in decorators for function memoization.
   3. Dict-like: Dictionary methods such as `__setitem__`, `__getitem__`, `__delitem__`, `__contains__`, `__iter__`, and `items` are provided.
   4. Thread-safe:  All of the basic operations use threading.Lock().
@@ -43,9 +44,29 @@ $ pip install ox_cache
 
 ## Caching
 
-To get a cache you simply sub-class `OxCacheBase` and then override
-desired methods. The only required method you must override is the
-`make_value` method to make the value when a key is not in the
+The simplest way to use the cache is to create an instance of
+OxCacheBase and use it like a dict as shown below but to really get
+the power of `ox_cache`, you will want to use mixins or overrides as
+shown later.
+
+```python
+>>> from ox_cache import OxCacheBase
+>>> c = OxCacheBase()  # trivial example of a cache
+>>> c['foo'] = 5  # alternative: c.store('foo', 5, **options)
+>>> c['foo']
+5
+
+```
+
+Of course, with the usage above you don't really get any benefits
+beyond a standard dict. One convenient feature of `ox_cache` is that
+you can override the `make_value` method to get a "smart cache". With
+`make_value`, when there is no value for a key, your cache will no how
+to make that value.
+
+To get a "smart cache" you simply sub-class `OxCacheBase` and then
+override desired methods. The only required method you must override
+is the `make_value` method to make the value when a key is not in the
 cache. The following illustrates the simplest use case:
 
 ```python
@@ -109,6 +130,33 @@ you may find useful include:
 For more sophisticated caching you can use more mix-ins or override
 the desired functions. See the docs for the `OxCacheBase` class in the
 source code or in the following documentation sections.
+
+Note that if you want to keep things as simple as possible, you don't
+have to override `make_value` if using the `TimedExpiryMixin` but can
+just use the `store` method as shown below:
+
+### Keeping it Simple
+
+```python
+>>> import time
+>>> from ox_cache import OxCacheBase, TimedExpiryMixin
+>>> class MyCache(TimedExpiryMixin, OxCacheBase):
+...     'Cache with timed expiry'
+... 
+>>> cache = MyCache()  # Create an instance
+>>> cache.expiry_seconds = 1  # make refresh time very short
+>>> cache.store('foo', 'blah')
+>>> cache.get('foo')
+'blah'
+>>> time.sleep(1.5)       # sleep so that cache becomes stale
+>>> try:                  # Attempt to get stale item 'foo'
+...     cache.get('foo')  # will cause an exception
+... except:               # since make_value not defined
+...     print("unable to get 'foo'")
+...
+unable to get 'foo'
+
+```
 
 ## Memoization
 
